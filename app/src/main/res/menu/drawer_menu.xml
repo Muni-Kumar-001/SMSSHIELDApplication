@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android">
+    <group android:checkableBehavior="single">
+        <item
+            android:id="@+id/nav_home"
+            android:icon="@drawable/ic_message"
+            android:title="@string/nav_messages" />
+        
+        <item android:title="Filter Messages">
+            <menu>
+                <item
+                    android:id="@+id/nav_all"
+                    android:icon="@drawable/ic_message"
+                    android:title="@string/filter_all" />
+                <item
+                    android:id="@+id/nav_safe"
+                    android:icon="@drawable/ic_message"
+                    android:title="@string/filter_safe" />
+                <item
+                    android:id="@+id/nav_spam"
+                    android:icon="@drawable/ic_warning"
+                    android:title="@string/filter_spam" />
+                <item
+                    android:id="@+id/nav_unknown"
+                    android:icon="@drawable/ic_notification"
+                    android:title="@string/filter_unknown" />
+            </menu>
+        </item>
+        
+        <item
+            android:id="@+id/nav_contacts"
+            android:icon="@drawable/ic_app_logo"
+            android:title="@string/nav_contacts" />
+    </group>
+</menu> 

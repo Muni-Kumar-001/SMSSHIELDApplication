@@ -1,0 +1,58 @@
+<resources>
+    <string name="app_name">SmsShield</string>
+    
+    <!-- General -->
+    <string name="action_settings">Settings</string>
+    <string name="action_search">Search</string>
+    <string name="action_filter">Filter</string>
+    
+    <!-- Navigation -->
+    <string name="nav_messages">Messages</string>
+    <string name="nav_contacts">Contacts</string>
+    <string name="nav_settings">Settings</string>
+    
+    <!-- Filter options -->
+    <string name="filter_all">All</string>
+    <string name="filter_safe">Safe</string>
+    <string name="filter_spam">Spam</string>
+    <string name="filter_unknown">Unknown</string>
+    
+    <!-- Contact status -->
+    <string name="status_known">Known</string>
+    <string name="status_unknown">Unknown</string>
+    <string name="status_blocked">Blocked</string>
+    
+    <!-- Messages -->
+    <string name="message_delete">Delete</string>
+    <string name="message_block_sender">Block Sender</string>
+    <string name="message_mark_safe">Mark as Safe</string>
+    <string name="message_mark_spam">Mark as Spam</string>
+    <string name="message_empty">No messages</string>
+    <string name="message_input_hint">Type a message…</string>
+    <string name="message_send">Send</string>
+    <string name="message_list">Message list</string>
+    <string name="message_chat">Message conversation</string>
+    
+    <!-- Contacts -->
+    <string name="contact_add">Add Contact</string>
+    <string name="contact_edit">Edit Contact</string>
+    <string name="contact_delete">Delete Contact</string>
+    <string name="contact_name">Name</string>
+    <string name="contact_phone">Phone Number</string>
+    <string name="contact_status">Status</string>
+    <string name="contact_empty">No contacts</string>
+    <string name="contact_search_hint">Search contacts…</string>
+    <string name="contact_list">Contact list</string>
+    
+    <!-- Dialog buttons -->
+    <string name="action_cancel">Cancel</string>
+    <string name="action_save">Save</string>
+    <string name="action_delete">Delete</string>
+    <string name="action_block">Block</string>
+    <string name="action_unblock">Unblock</string>
+    
+    <!-- Error messages -->
+    <string name="error_permission_denied">Permission denied</string>
+    <string name="error_api_failed">Failed to analyze message</string>
+    <string name="error_sms_send_failed">Failed to send SMS</string>
+</resources>

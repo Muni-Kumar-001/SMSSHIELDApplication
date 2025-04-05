@@ -1,0 +1,24 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    <!-- Base application theme. -->
+    <style name="Theme.SMSSHIELD" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <!-- Primary brand color. -->
+        <item name="colorPrimary">@color/primary_dark</item>
+        <item name="colorPrimaryVariant">@color/primary</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <!-- Secondary brand color. -->
+        <item name="colorSecondary">@color/accent</item>
+        <item name="colorSecondaryVariant">@color/primary_light</item>
+        <item name="colorOnSecondary">@color/black</item>
+        <!-- Status bar color. -->
+        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+        <!-- Text colors -->
+        <item name="android:textColorPrimary">@color/white</item>
+        <item name="android:textColorSecondary">@color/text_light</item>
+        <!-- Background colors -->
+        <item name="android:colorBackground">@color/black</item>
+        <!-- Enable transitions -->
+        <item name="android:windowActivityTransitions">true</item>
+        <!-- Enable content transitions -->
+        <item name="android:windowContentTransitions">true</item>
+    </style>
+</resources>

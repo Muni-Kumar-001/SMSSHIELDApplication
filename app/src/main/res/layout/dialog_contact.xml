@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/contact_name"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp" />
+
+    <EditText
+        android:id="@+id/edit_contact_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/contact_name"
+        android:inputType="textPersonName"
+        android:minHeight="48dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/contact_phone"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp" />
+
+    <EditText
+        android:id="@+id/edit_phone_number"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:hint="@string/contact_phone"
+        android:inputType="phone"
+        android:minHeight="48dp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="@string/contact_status"
+        android:textColor="@color/text_primary"
+        android:textSize="14sp" />
+
+    <Spinner
+        android:id="@+id/spinner_status"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="48dp"
+        android:entries="@array/contact_status_options" />
+
+</LinearLayout> 

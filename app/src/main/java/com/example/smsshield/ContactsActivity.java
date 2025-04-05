@@ -1,12 +1,19 @@
 package com.example.smsshield;
 
+import android.Manifest;
 import android.app.AlertDialog;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
+import android.net.Uri;
 import android.os.Bundle;
+import android.provider.ContactsContract;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.EditText;
+import android.widget.ProgressBar;
 import android.widget.Spinner;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -15,28 +22,34 @@ import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.SearchView;
 import androidx.appcompat.widget.Toolbar;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.example.smsshield.adapters.ContactAdapter;
 import com.example.smsshield.database.entities.User;
-import com.example.smsshield.viewmodel.MessageViewModel;
 import com.example.smsshield.viewmodel.UserViewModel;
 import com.google.android.material.floatingactionbutton.FloatingActionButton;
 
-import java.util.Arrays;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
-public class ContactsActivity extends AppCompatActivity 
-        implements ContactAdapter.OnContactClickListener, ContactAdapter.OnContactLongClickListener {
+public class ContactsActivity extends AppCompatActivity implements 
+        ContactAdapter.OnContactClickListener, 
+        ContactAdapter.OnContactLongClickListener {
     
+    private static final String TAG = "ContactsActivity";
     private RecyclerView recyclerViewContacts;
     private TextView textEmptyContacts;
+    private ProgressBar progressLoading;
     private FloatingActionButton fabAddContact;
     private SearchView searchView;
     
     private UserViewModel userViewModel;
-    private MessageViewModel messageViewModel;
     private ContactAdapter adapter;
     
     @Override
@@ -56,6 +69,7 @@ public class ContactsActivity extends AppCompatActivity
         // Set up views
         recyclerViewContacts = findViewById(R.id.recycler_view_contacts);
         textEmptyContacts = findViewById(R.id.text_empty_contacts);
+        progressLoading = findViewById(R.id.progress_loading);
         fabAddContact = findViewById(R.id.fab_add_contact);
         searchView = findViewById(R.id.search_view);
         
@@ -66,22 +80,11 @@ public class ContactsActivity extends AppCompatActivity
         adapter = new ContactAdapter(this, this, this);
         recyclerViewContacts.setAdapter(adapter);
         
-        // Set up view models
+        // Set up view model
         userViewModel = new ViewModelProvider(this).get(UserViewModel.class);
-        messageViewModel = new ViewModelProvider(this).get(MessageViewModel.class);
         
-        // Observe contacts
-        userViewModel.getSearchResults().observe(this, users -> {
-            adapter.setContacts(users);
-            
-            if (users == null || users.isEmpty()) {
-                recyclerViewContacts.setVisibility(View.GONE);
-                textEmptyContacts.setVisibility(View.VISIBLE);
-            } else {
-                recyclerViewContacts.setVisibility(View.VISIBLE);
-                textEmptyContacts.setVisibility(View.GONE);
-            }
-        });
+        // Load device contacts
+        loadDeviceContacts();
         
         // Set up search view
         searchView.setOnQueryTextListener(new SearchView.OnQueryTextListener() {
@@ -92,7 +95,7 @@ public class ContactsActivity extends AppCompatActivity
             
             @Override
             public boolean onQueryTextChange(String newText) {
-                userViewModel.setSearchQuery(newText);
+                adapter.filter(newText);
                 return true;
             }
         });
@@ -101,6 +104,75 @@ public class ContactsActivity extends AppCompatActivity
         fabAddContact.setOnClickListener(v -> {
             showAddContactDialog();
         });
+    }
+    
+    private void loadDeviceContacts() {
+        // Check permission first
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) 
+                != PackageManager.PERMISSION_GRANTED) {
+            requestContactsPermission();
+            return;
+        }
+        
+        new Thread(() -> {
+            List<User> deviceContacts = new ArrayList<>();
+            // Use a HashMap to ensure unique phone numbers
+            Map<String, User> uniqueContacts = new HashMap<>();
+            
+            // Columns to fetch
+            String[] projection = new String[]{
+                    ContactsContract.CommonDataKinds.Phone._ID,
+                    ContactsContract.CommonDataKinds.Phone.NUMBER,
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+            };
+            
+            // Query device contacts
+            try (Cursor cursor = getContentResolver().query(
+                    ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                    projection,
+                    null,
+                    null,
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " ASC")) {
+                    
+                if (cursor != null) {
+                    int idColumnIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone._ID);
+                    int numberColumnIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER);
+                    int nameColumnIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME);
+                    
+                    while (cursor.moveToNext()) {
+                        long id = cursor.getLong(idColumnIndex);
+                        String phoneNumber = cursor.getString(numberColumnIndex);
+                        String name = cursor.getString(nameColumnIndex);
+                        
+                        // Format phone number (remove spaces, dashes, etc.)
+                        phoneNumber = phoneNumber.replaceAll("[\\s-()]", "");
+                        
+                        // Create user object and store in map with phone number as key to ensure uniqueness
+                        User user = new User(name, phoneNumber, User.STATUS_KNOWN);
+                        user.setId(id);
+                        uniqueContacts.put(phoneNumber, user);
+                    }
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error loading device contacts", e);
+            }
+            
+            // Convert map values to list
+            deviceContacts.addAll(uniqueContacts.values());
+            
+            // Update UI on main thread
+            runOnUiThread(() -> {
+                progressLoading.setVisibility(View.GONE);
+                
+                if (deviceContacts.isEmpty()) {
+                    textEmptyContacts.setText("No contacts found");
+                    textEmptyContacts.setVisibility(View.VISIBLE);
+                } else {
+                    adapter.setContacts(deviceContacts);
+                    textEmptyContacts.setVisibility(View.GONE);
+                }
+            });
+        }).start();
     }
     
     @Override
@@ -146,9 +218,26 @@ public class ContactsActivity extends AppCompatActivity
                 return;
             }
             
-            User user = new User(phone, name, status);
-            userViewModel.insert(user);
-            Toast.makeText(this, "Contact added", Toast.LENGTH_SHORT).show();
+            // Check if already stored in our database
+            User existingUser = userViewModel.getUserByPhoneNumber(phone);
+            
+            if (existingUser == null) {
+                // Create new user
+                User newUser = new User(name, phone, status);
+                userViewModel.insert(newUser);
+                
+                // Add to device contacts too
+                if (status.equals(User.STATUS_KNOWN)) {
+                    addToDeviceContacts(name, phone);
+                }
+                
+                // Refresh contact list
+                loadDeviceContacts();
+                
+                Toast.makeText(this, "Contact added", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "Contact already exists", Toast.LENGTH_SHORT).show();
+            }
         });
         
         builder.setNegativeButton(R.string.action_cancel, null);
@@ -164,13 +253,8 @@ public class ContactsActivity extends AppCompatActivity
                 getString(R.string.contact_delete)
         };
         
-        if (User.STATUS_BLOCKED.equals(contact.getStatus())) {
-            options = Arrays.copyOf(options, options.length + 1);
-            options[options.length - 1] = getString(R.string.action_unblock);
-        } else {
-            options = Arrays.copyOf(options, options.length + 1);
-            options[options.length - 1] = getString(R.string.action_block);
-        }
+        User dbUser = userViewModel.getUserByPhoneNumber(contact.getPhoneNumber());
+        boolean isBlocked = dbUser != null && User.STATUS_BLOCKED.equals(dbUser.getStatus());
         
         builder.setItems(options, (dialog, which) -> {
             if (which == 0) {
@@ -178,23 +262,32 @@ public class ContactsActivity extends AppCompatActivity
                 showEditContactDialog(contact);
             } else if (which == 1) {
                 // Delete contact
-                userViewModel.delete(contact);
-                Toast.makeText(this, "Contact deleted", Toast.LENGTH_SHORT).show();
-            } else if (which == 2) {
-                // Block/Unblock
-                if (User.STATUS_BLOCKED.equals(contact.getStatus())) {
-                    contact.setStatus(User.STATUS_KNOWN);
-                    userViewModel.update(contact);
-                    Toast.makeText(this, "Contact unblocked", Toast.LENGTH_SHORT).show();
-                } else {
-                    contact.setStatus(User.STATUS_BLOCKED);
-                    userViewModel.update(contact);
-                    Toast.makeText(this, "Contact blocked", Toast.LENGTH_SHORT).show();
-                }
+                deleteContact(contact);
             }
         });
         
         builder.show();
+    }
+    
+    private void deleteContact(User contact) {
+        // Show confirmation dialog
+        new AlertDialog.Builder(this)
+                .setTitle("Delete Contact")
+                .setMessage("Are you sure you want to delete this contact?")
+                .setPositiveButton("Delete", (dialog, which) -> {
+                    // Delete from our database if exists
+                    User dbUser = userViewModel.getUserByPhoneNumber(contact.getPhoneNumber());
+                    if (dbUser != null) {
+                        userViewModel.delete(dbUser);
+                    }
+                    
+                    // Refresh list
+                    loadDeviceContacts();
+                    
+                    Toast.makeText(this, "Contact deleted", Toast.LENGTH_SHORT).show();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
     
     private void showEditContactDialog(User contact) {
@@ -209,7 +302,14 @@ public class ContactsActivity extends AppCompatActivity
         // Set existing values
         editName.setText(contact.getName());
         editPhone.setText(contact.getPhoneNumber());
-        spinnerStatus.setSelection(getPositionFromStatus(contact.getStatus()));
+        
+        // Get status from our database
+        User dbUser = userViewModel.getUserByPhoneNumber(contact.getPhoneNumber());
+        if (dbUser != null) {
+            spinnerStatus.setSelection(getPositionFromStatus(dbUser.getStatus()));
+        } else {
+            spinnerStatus.setSelection(getPositionFromStatus(User.STATUS_KNOWN));
+        }
         
         builder.setView(dialogView);
         
@@ -223,19 +323,19 @@ public class ContactsActivity extends AppCompatActivity
                 return;
             }
             
-            // Update contact
-            contact.setName(name);
-            contact.setStatus(status);
-            
-            if (!phone.equals(contact.getPhoneNumber())) {
-                // Phone number changed, create a new contact and delete the old one
-                userViewModel.delete(contact);
-                User newContact = new User(phone, name, status);
-                userViewModel.insert(newContact);
+            // Update in our database
+            if (dbUser != null) {
+                dbUser.setName(name);
+                dbUser.setPhoneNumber(phone);
+                dbUser.setStatus(status);
+                userViewModel.update(dbUser);
             } else {
-                // Just update the existing contact
-                userViewModel.update(contact);
+                User newUser = new User(name, phone, status);
+                userViewModel.insert(newUser);
             }
+            
+            // Refresh list
+            loadDeviceContacts();
             
             Toast.makeText(this, "Contact updated", Toast.LENGTH_SHORT).show();
         });
@@ -243,6 +343,32 @@ public class ContactsActivity extends AppCompatActivity
         builder.setNegativeButton(R.string.action_cancel, null);
         
         builder.show();
+    }
+    
+    private void addToDeviceContacts(String name, String phoneNumber) {
+        try {
+            Intent intent = new Intent(ContactsContract.Intents.Insert.ACTION);
+            intent.setType(ContactsContract.RawContacts.CONTENT_TYPE);
+            intent.putExtra(ContactsContract.Intents.Insert.NAME, name);
+            intent.putExtra(ContactsContract.Intents.Insert.PHONE, phoneNumber);
+            startActivity(intent);
+        } catch (Exception e) {
+            Log.e(TAG, "Error adding to device contacts", e);
+            Toast.makeText(this, "Failed to add to device contacts", Toast.LENGTH_SHORT).show();
+        }
+    }
+    
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 100) {
+            if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                loadDeviceContacts();
+            } else {
+                textEmptyContacts.setText("Contacts permission denied");
+                textEmptyContacts.setVisibility(View.VISIBLE);
+            }
+        }
     }
     
     private String getStatusFromPosition(int position) {
@@ -259,13 +385,24 @@ public class ContactsActivity extends AppCompatActivity
     }
     
     private int getPositionFromStatus(String status) {
-        if (User.STATUS_KNOWN.equals(status)) {
-            return 0;
-        } else if (User.STATUS_UNKNOWN.equals(status)) {
-            return 1;
-        } else if (User.STATUS_BLOCKED.equals(status)) {
-            return 2;
+        switch (status) {
+            case User.STATUS_KNOWN:
+                return 0;
+            case User.STATUS_UNKNOWN:
+                return 1;
+            case User.STATUS_BLOCKED:
+                return 2;
+            default:
+                return 1;
         }
-        return 1; // Default to unknown
+    }
+    
+    private void requestContactsPermission() {
+        progressLoading.setVisibility(View.GONE);
+        textEmptyContacts.setText("Contacts permission needed");
+        textEmptyContacts.setVisibility(View.VISIBLE);
+        ActivityCompat.requestPermissions(this, 
+                new String[]{Manifest.permission.READ_CONTACTS}, 
+                100);
     }
 } 

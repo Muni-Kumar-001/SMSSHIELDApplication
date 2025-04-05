@@ -83,4 +83,15 @@
         app:layout_constraintEnd_toEndOf="parent"
         android:visibility="gone" />
 
+    <!-- Add loading spinner -->
+    <ProgressBar
+        android:id="@+id/progress_api_checking"
+        android:layout_width="24dp"
+        android:layout_height="24dp"
+        android:layout_marginEnd="16dp"
+        android:visibility="gone"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="@+id/toolbar" />
+
 </androidx.constraintlayout.widget.ConstraintLayout> 

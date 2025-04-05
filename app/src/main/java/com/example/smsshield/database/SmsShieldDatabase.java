@@ -28,15 +28,14 @@ public abstract class SmsShieldDatabase extends RoomDatabase {
     private static final int NUMBER_OF_THREADS = 4;
     public static final ExecutorService databaseWriteExecutor = Executors.newFixedThreadPool(NUMBER_OF_THREADS);
 
-    public static SmsShieldDatabase getDatabase(final Context context) {
+    public static SmsShieldDatabase getInstance(Context context) {
         if (INSTANCE == null) {
             synchronized (SmsShieldDatabase.class) {
                 if (INSTANCE == null) {
-                    INSTANCE = Room.databaseBuilder(
-                            context.getApplicationContext(),
-                            SmsShieldDatabase.class,
-                            "sms_shield_database")
-                            .addCallback(sRoomDatabaseCallback)
+                    INSTANCE = Room.databaseBuilder(context.getApplicationContext(),
+                            SmsShieldDatabase.class, "sms_shield_database")
+                            .fallbackToDestructiveMigration()
+                            .addCallback(roomCallback)
                             .build();
                 }
             }
@@ -44,14 +43,17 @@ public abstract class SmsShieldDatabase extends RoomDatabase {
         return INSTANCE;
     }
 
-    private static RoomDatabase.Callback sRoomDatabaseCallback = new RoomDatabase.Callback() {
+    private static final RoomDatabase.Callback roomCallback = new RoomDatabase.Callback() {
         @Override
         public void onCreate(@NonNull SupportSQLiteDatabase db) {
             super.onCreate(db);
 
+            // Pre-populate database if needed
             databaseWriteExecutor.execute(() -> {
-                // Populate the database in the background if needed
-                // For example, add default system contacts or message categories
+                // Create default user for sent messages (self)
+                UserDao userDao = INSTANCE.userDao();
+                User selfUser = new User("Me (You)", "self", User.STATUS_KNOWN);
+                userDao.insert(selfUser);
             });
         }
     };

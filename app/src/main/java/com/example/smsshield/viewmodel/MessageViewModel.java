@@ -13,7 +13,10 @@ import com.example.smsshield.database.entities.User;
 import com.example.smsshield.repository.MessageRepository;
 import com.example.smsshield.repository.UserRepository;
 
+import java.util.Date;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class MessageViewModel extends AndroidViewModel {
     
@@ -26,6 +29,8 @@ public class MessageViewModel extends AndroidViewModel {
     private final LiveData<List<Message>> messagesForUser;
     
     private final MutableLiveData<String> currentPhoneNumber = new MutableLiveData<>();
+    
+    private final ExecutorService executorService;
     
     public MessageViewModel(@NonNull Application application) {
         super(application);
@@ -42,6 +47,8 @@ public class MessageViewModel extends AndroidViewModel {
                 return messageRepository.getMessagesForUser(userId);
             }
         });
+        
+        executorService = Executors.newSingleThreadExecutor();
     }
     
     public LiveData<List<Message>> getAllMessages() {
@@ -69,31 +76,65 @@ public class MessageViewModel extends AndroidViewModel {
         return currentPhoneNumber.getValue();
     }
     
-    public long insert(Message message) {
-        // Check if the contact exists in the user table
-        User user = userRepository.getUserByPhoneNumber(message.getPhoneNumber());
-        if (user == null && message.isIncoming()) {
-            // If the contact doesn't exist and it's a received message, create it as unknown
-            user = new User(message.getPhoneNumber(), message.getPhoneNumber(), User.STATUS_UNKNOWN);
-            userRepository.insert(user);
-        }
-        
+    public LiveData<List<Message>> getPagedMessages(int page, int pageSize) {
+        return messageRepository.getPagedMessages(page, pageSize);
+    }
+    
+    public LiveData<List<Message>> getMessagesByUserId(long userId) {
+        return messageRepository.getMessagesByUserId(userId);
+    }
+    
+    public LiveData<List<Message>> getMessagesByStatus(String status) {
+        return messageRepository.getMessagesByStatus(status);
+    }
+    
+    public LiveData<List<Message>> searchMessages(String query) {
+        return messageRepository.searchMessages(query);
+    }
+    
+    public void insert(Message message) {
+        executorService.execute(() -> {
+            // Check if the contact exists in the user table
+            User user = userRepository.getUserByPhoneNumber(message.getPhoneNumber());
+            if (user == null && message.isIncoming()) {
+                // If the contact doesn't exist and it's a received message, create it as unknown
+                user = new User(message.getPhoneNumber(), message.getPhoneNumber(), User.STATUS_UNKNOWN);
+                userRepository.insert(user);
+            }
+            
+            messageRepository.insert(message);
+        });
+    }
+    
+    public long insertSync(Message message) {
         return messageRepository.insert(message);
     }
     
     public void update(Message message) {
-        messageRepository.update(message);
+        executorService.execute(() -> messageRepository.update(message));
     }
     
     public void delete(Message message) {
-        messageRepository.delete(message);
+        executorService.execute(() -> messageRepository.delete(message));
+    }
+    
+    public void deleteMessageById(long messageId) {
+        executorService.execute(() -> messageRepository.deleteMessageById(messageId));
+    }
+    
+    public void deleteAllMessagesForUser(long userId) {
+        executorService.execute(() -> messageRepository.deleteAllMessagesForUser(userId));
     }
     
     public void updateMessageStatus(long messageId, String status) {
-        messageRepository.updateMessageStatus(messageId, status);
+        executorService.execute(() -> messageRepository.updateMessageStatus(messageId, status));
     }
     
     public Message getLatestMessageForUser(long userId) {
         return messageRepository.getLatestMessageForUser(userId);
+    }
+    
+    public List<Message> getPagedMessagesSync(int page, int pageSize) {
+        return messageRepository.getPagedMessagesSync(page, pageSize);
     }
 } 

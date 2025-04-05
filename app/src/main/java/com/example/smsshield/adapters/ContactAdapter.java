@@ -20,6 +20,8 @@ public class ContactAdapter extends RecyclerView.Adapter<ContactAdapter.ContactV
     
     private final Context context;
     private final List<User> contacts = new ArrayList<>();
+    private final List<User> allContacts = new ArrayList<>();
+    private String currentQuery = "";
     private final OnContactClickListener clickListener;
     private final OnContactLongClickListener longClickListener;
     
@@ -86,9 +88,34 @@ public class ContactAdapter extends RecyclerView.Adapter<ContactAdapter.ContactV
     
     public void setContacts(List<User> contacts) {
         this.contacts.clear();
+        this.allContacts.clear();
         if (contacts != null) {
             this.contacts.addAll(contacts);
+            this.allContacts.addAll(contacts);
         }
+        notifyDataSetChanged();
+    }
+    
+    public void filter(String query) {
+        currentQuery = query != null ? query.toLowerCase().trim() : "";
+        
+        contacts.clear();
+        
+        if (currentQuery.isEmpty()) {
+            // If no query, show all contacts
+            contacts.addAll(allContacts);
+        } else {
+            // Filter contacts based on query
+            for (User contact : allContacts) {
+                String name = contact.getName() != null ? contact.getName().toLowerCase() : "";
+                String phone = contact.getPhoneNumber() != null ? contact.getPhoneNumber().toLowerCase() : "";
+                
+                if (name.contains(currentQuery) || phone.contains(currentQuery)) {
+                    contacts.add(contact);
+                }
+            }
+        }
+        
         notifyDataSetChanged();
     }
     

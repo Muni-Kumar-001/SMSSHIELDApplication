@@ -1,5 +1,6 @@
 package com.example.smsshield;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.PendingIntent;
@@ -7,22 +8,29 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
+import android.content.pm.PackageManager;
+import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.provider.ContactsContract;
 import android.telephony.SmsManager;
 import android.util.Log;
 import android.view.MenuItem;
 import android.view.View;
 import android.widget.EditText;
 import android.widget.ImageButton;
+import android.widget.ProgressBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 import androidx.lifecycle.ViewModelProvider;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
@@ -37,14 +45,20 @@ import com.google.android.material.floatingactionbutton.FloatingActionButton;
 
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 public class MessageDetailActivity extends AppCompatActivity implements ChatAdapter.OnMessageLongClickListener {
+    
+    private static final String TAG = "MessageDetailActivity";
     
     private RecyclerView recyclerViewChat;
     private TextView textEmptyChat;
     private EditText editTextMessage;
     private ImageButton buttonSend;
     private FloatingActionButton buttonScrollToBottom;
+    private ProgressBar progressApiChecking;
     
     private MessageViewModel messageViewModel;
     private UserViewModel userViewModel;
@@ -53,20 +67,12 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
     private String phoneNumber;
     private String contactName;
     private long userId;
+    private User currentUser;
     
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_message_detail);
-        
-        // Get phone number from intent
-        phoneNumber = getIntent().getStringExtra("phone_number");
-        contactName = getIntent().getStringExtra("contact_name");
-        
-        if (phoneNumber == null) {
-            finish();
-            return;
-        }
         
         // Set up toolbar
         Toolbar toolbar = findViewById(R.id.toolbar);
@@ -74,7 +80,6 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
         
         if (getSupportActionBar() != null) {
             getSupportActionBar().setDisplayHomeAsUpEnabled(true);
-            getSupportActionBar().setTitle(contactName != null ? contactName : phoneNumber);
         }
         
         // Set up views
@@ -83,6 +88,7 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
         editTextMessage = findViewById(R.id.edit_text_message);
         buttonSend = findViewById(R.id.button_send);
         buttonScrollToBottom = findViewById(R.id.button_scroll_to_bottom);
+        progressApiChecking = findViewById(R.id.progress_api_checking);
         
         if (buttonScrollToBottom != null) {
             buttonScrollToBottom.setOnClickListener(v -> scrollToBottom());
@@ -105,7 +111,7 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
         
         // Set up recycler view
         LinearLayoutManager layoutManager = new LinearLayoutManager(this);
-        layoutManager.setStackFromEnd(false); // Don't stack from end - show oldest first
+        layoutManager.setStackFromEnd(true); // Stack from end - show newest at bottom
         layoutManager.setReverseLayout(false); // Don't reverse order
         recyclerViewChat.setLayoutManager(layoutManager);
         
@@ -116,21 +122,7 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
         messageViewModel = new ViewModelProvider(this).get(MessageViewModel.class);
         userViewModel = new ViewModelProvider(this).get(UserViewModel.class);
         
-        // Get user ID for this contact
-        User user = userViewModel.getUserByPhoneNumber(phoneNumber);
-        if (user != null) {
-            userId = user.getId();
-            
-            // Get messages for this user
-            messageViewModel.setCurrentUserId(userId);
-            observeMessages();
-        } else {
-            // No user found, create a new one
-            User newUser = new User(phoneNumber, phoneNumber, User.STATUS_UNKNOWN);
-            userId = userViewModel.insert(newUser);
-            messageViewModel.setCurrentUserId(userId);
-            observeMessages();
-        }
+        setupContactInfo();
         
         // Set send button click listener
         buttonSend.setOnClickListener(v -> {
@@ -138,6 +130,92 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
             // Auto-scroll to bottom when user sends a message
             new Handler().postDelayed(this::scrollToBottom, 200);
         });
+    }
+    
+    private void setupContactInfo() {
+        // Get phone number from intent
+        phoneNumber = getIntent().getStringExtra("phone_number");
+        if (phoneNumber == null) {
+            Toast.makeText(this, "Error: No phone number provided", Toast.LENGTH_SHORT).show();
+            finish();
+            return;
+        }
+        
+        // Check if contact name was provided in intent
+        String contactName = getIntent().getStringExtra("contact_name");
+        
+        // If not, try to look up from device contacts
+        if (contactName == null || contactName.equals(phoneNumber)) {
+            contactName = getContactNameFromDevice(phoneNumber);
+        }
+        
+        // If still not found, use phone number as name
+        if (contactName == null || contactName.isEmpty()) {
+            contactName = phoneNumber;
+        }
+        
+        // Set contact name in toolbar
+        if (getSupportActionBar() != null) {
+            getSupportActionBar().setTitle(contactName);
+        }
+        
+        // Store contact name for later use
+        this.contactName = contactName;
+        
+        // Get user by phone number and observe any changes
+        userViewModel.getUserByPhoneNumber(phoneNumber);
+        User user = userViewModel.getUserByPhoneNumber(phoneNumber);
+        
+        if (user == null) {
+            // Create new user if not exists
+            User newUser = new User(contactName, phoneNumber, User.STATUS_UNKNOWN);
+            userId = userViewModel.insert(newUser);
+            messageViewModel.setCurrentUserId(userId);
+            observeMessages();
+        } else {
+            // User exists, set user ID and observe messages
+            currentUser = user;
+            userId = user.getId();
+            updateContactStatusUI(user.getStatus());
+        }
+    }
+    
+    private String getContactNameFromDevice(String phoneNumber) {
+        // Check permission first
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) 
+                != PackageManager.PERMISSION_GRANTED) {
+            return null;
+        }
+        
+        // Format phone number for matching
+        String formattedNumber = phoneNumber.replaceAll("[\\s-()]", "");
+        
+        // Query for contact name
+        String[] projection = new String[] {
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+        };
+        
+        String selection = ContactsContract.CommonDataKinds.Phone.NUMBER + " LIKE ?";
+        String[] selectionArgs = new String[] { "%" + formattedNumber + "%" };
+        
+        try (Cursor cursor = getContentResolver().query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                projection,
+                selection,
+                selectionArgs,
+                null)) {
+                
+            if (cursor != null && cursor.moveToFirst()) {
+                int nameColumnIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME);
+                if (nameColumnIndex >= 0) {
+                    return cursor.getString(nameColumnIndex);
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error getting contact name", e);
+        }
+        
+        return null;
     }
     
     private void sendMessage() {
@@ -263,7 +341,7 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
             User user = userViewModel.getUserByPhoneNumber(phoneNumber);
             if (user == null) {
                 // Create as known
-                user = new User(contactName != null ? contactName : phoneNumber, phoneNumber, User.STATUS_KNOWN);
+                user = new User(contactName, phoneNumber, User.STATUS_KNOWN);
                 userId = userViewModel.insert(user);
             }
             
@@ -300,16 +378,42 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
     @Override
     public void onMessageLongClick(Message message, int position) {
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        String[] options = {getString(R.string.message_delete)};
+        
+        // Build options based on message type
+        List<String> optionsList = new ArrayList<>();
+        optionsList.add(getString(R.string.message_delete));
+        optionsList.add(getString(R.string.action_copy));
+        
+        // Add check option for received messages
+        if (message.isIncoming()) {
+            optionsList.add("Check Message");
+        }
+        
+        String[] options = optionsList.toArray(new String[0]);
         
         builder.setItems(options, (dialog, which) -> {
-            if (which == 0) {
-                // First delete from Android SMS storage
+            String selectedOption = options[which];
+            
+            if (selectedOption.equals(getString(R.string.message_delete))) {
+                // Delete the message from database
+                messageViewModel.delete(message);
+                
+                // Also delete from the device SMS database
                 deleteSmsFromDevice(message);
                 
-                // Then delete from our database
-                messageViewModel.delete(message);
+                // Notify the system that SMS content has changed to refresh other apps
+                sendBroadcast(new Intent("android.provider.Telephony.SMS_RECEIVED"));
+                
                 Toast.makeText(this, "Message deleted", Toast.LENGTH_SHORT).show();
+            } else if (selectedOption.equals(getString(R.string.action_copy))) {
+                // Copy to clipboard
+                android.content.ClipboardManager clipboard = (android.content.ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                android.content.ClipData clip = android.content.ClipData.newPlainText("Message", message.getContent());
+                clipboard.setPrimaryClip(clip);
+                Toast.makeText(this, "Message copied to clipboard", Toast.LENGTH_SHORT).show();
+            } else if (selectedOption.equals("Check Message")) {
+                // Check message via API
+                checkMessageViaApi(message);
             }
         });
         
@@ -320,22 +424,84 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
         // Only attempt to delete if this is an incoming message (as we don't have URI for sent messages)
         if (message.isIncoming()) {
             try {
+                // Log the message we're trying to delete
+                Log.d(TAG, "Attempting to delete SMS from device: ID=" + message.getId() + 
+                      ", Phone=" + message.getPhoneNumber() + ", Date=" + message.getTimestamp());
+                
                 // Constructing the SMS Uri
                 Uri smsUri = Uri.parse("content://sms");
                 
-                // Query to find the message in the system database
-                String selection = "address = ? AND date = ? AND body = ?";
-                String[] selectionArgs = new String[]{
-                        message.getPhoneNumber(),
-                        String.valueOf(message.getTimestamp()),
-                        message.getContent()
+                // First try to find the message by id
+                int deletedRows = 0;
+                
+                // Try to match on multiple criteria to better find the message
+                String[] queries = {
+                    // Try by phone and approximate time (more lenient)
+                    "address LIKE ? AND date BETWEEN ? AND ?",
+                    // Try by content and date range
+                    "body = ? AND date BETWEEN ? AND ?",
+                    // Try by all criteria (most specific)
+                    "address LIKE ? AND body = ? AND date BETWEEN ? AND ?"
                 };
                 
-                // Delete the message
-                getContentResolver().delete(smsUri, selection, selectionArgs);
+                // Get a time range of 5 seconds around the message timestamp
+                long timeStart = message.getTimestamp() - 5000;
+                long timeEnd = message.getTimestamp() + 5000;
+                
+                for (String selection : queries) {
+                    String[] selectionArgs;
+                    
+                    if (selection.startsWith("address")) {
+                        if (selection.contains("body")) {
+                            // Combined query
+                            selectionArgs = new String[]{
+                                "%" + message.getPhoneNumber() + "%",
+                                message.getContent(),
+                                String.valueOf(timeStart),
+                                String.valueOf(timeEnd)
+                            };
+                        } else {
+                            // Just phone number and time
+                            selectionArgs = new String[]{
+                                "%" + message.getPhoneNumber() + "%",
+                                String.valueOf(timeStart),
+                                String.valueOf(timeEnd)
+                            };
+                        }
+                    } else {
+                        // Just content and time
+                        selectionArgs = new String[]{
+                            message.getContent(),
+                            String.valueOf(timeStart),
+                            String.valueOf(timeEnd)
+                        };
+                    }
+                    
+                    // Try to delete with this query
+                    int rows = getContentResolver().delete(smsUri, selection, selectionArgs);
+                    Log.d(TAG, "Deletion attempt with query '" + selection + 
+                          "' deleted " + rows + " messages");
+                    
+                    deletedRows += rows;
+                    
+                    // If we deleted something, we can stop
+                    if (rows > 0) {
+                        break;
+                    }
+                }
+                
+                if (deletedRows > 0) {
+                    Log.d(TAG, "Successfully deleted " + deletedRows + " message(s) from device SMS database");
+                    // Force refresh the conversation
+                    sendBroadcast(new Intent("android.provider.Telephony.SMS_RECEIVED"));
+                } else {
+                    Log.e(TAG, "Failed to delete message from device SMS database - no matching message found");
+                }
             } catch (Exception e) {
-                Log.e("MessageDetailActivity", "Error deleting SMS from device", e);
+                Log.e(TAG, "Error deleting SMS from device", e);
             }
+        } else {
+            Log.d(TAG, "Not deleting outgoing message from device SMS database");
         }
     }
     
@@ -367,6 +533,9 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
                 // Update adapter with messages
                 adapter.setMessages(messages);
                 
+                // Auto-scroll to bottom when messages are loaded
+                new Handler(Looper.getMainLooper()).postDelayed(this::scrollToBottom, 100);
+                
                 // Show/hide scroll button based on scroll position
                 if (recyclerViewChat.canScrollVertically(1)) {
                     buttonScrollToBottom.setVisibility(View.VISIBLE);
@@ -379,5 +548,225 @@ public class MessageDetailActivity extends AppCompatActivity implements ChatAdap
                 buttonScrollToBottom.setVisibility(View.GONE);
             }
         });
+    }
+
+    private void updateContactStatusUI(String status) {
+        // Update UI based on contact status
+        if (User.STATUS_BLOCKED.equals(status)) {
+            // Show blocked status indicator
+            Toast.makeText(this, "This contact is blocked", Toast.LENGTH_SHORT).show();
+        }
+        
+        // Set up messages for this user - observeMessages must be called after currentUser is set
+        if (currentUser != null) {
+            userId = currentUser.getId();
+            messageViewModel.setCurrentUserId(userId);
+            observeMessages();
+        }
+    }
+
+    // Add method to check message via API
+    private void checkMessageViaApi(Message message) {
+        // Show loading spinner
+        progressApiChecking.setVisibility(View.VISIBLE);
+        
+        // Check network connectivity
+        if (!isNetworkAvailable()) {
+            // No internet, mark as unchecked and add to queue
+            messageViewModel.updateMessageStatus(message.getId(), Message.STATUS_UNCHECKED);
+            addToMessageCheckQueue(message.getId());
+            progressApiChecking.setVisibility(View.GONE);
+            Toast.makeText(this, "Message queued for checking when internet is available", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        
+        // Use API service to check the message
+        com.example.smsshield.api.SmsAnalyzerService analyzerService = 
+                new com.example.smsshield.api.SmsAnalyzerService(this, new com.example.smsshield.repository.MessageRepository(this));
+        
+        analyzerService.analyzeMessage(message, new com.example.smsshield.api.SmsAnalyzerService.AnalysisCallback() {
+            @Override
+            public void onResult(boolean isSpam, String resultMessage) {
+                // Update UI on main thread
+                runOnUiThread(() -> {
+                    // Hide spinner
+                    progressApiChecking.setVisibility(View.GONE);
+                    
+                    // Update message status
+                    String newStatus = isSpam ? Message.STATUS_SPAM : Message.STATUS_SAFE;
+                    messageViewModel.updateMessageStatus(message.getId(), newStatus);
+                    
+                    // Show result toast
+                    String resultText = isSpam ? "Message marked as SPAM" : "Message marked as SAFE";
+                    Toast.makeText(MessageDetailActivity.this, resultText, Toast.LENGTH_SHORT).show();
+                });
+            }
+            
+            @Override
+            public void onError(String error) {
+                // Update UI on main thread
+                runOnUiThread(() -> {
+                    // Hide spinner
+                    progressApiChecking.setVisibility(View.GONE);
+                    
+                    // Mark as unchecked and add to queue for later
+                    messageViewModel.updateMessageStatus(message.getId(), Message.STATUS_UNCHECKED);
+                    addToMessageCheckQueue(message.getId());
+                    
+                    // Show error toast
+                    Toast.makeText(MessageDetailActivity.this, 
+                            "Error checking message: " + error, Toast.LENGTH_SHORT).show();
+                });
+            }
+        });
+    }
+    
+    // Check if network is available
+    private boolean isNetworkAvailable() {
+        android.net.ConnectivityManager connectivityManager = (android.net.ConnectivityManager) 
+                getSystemService(Context.CONNECTIVITY_SERVICE);
+        
+        if (connectivityManager != null) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                android.net.Network network = connectivityManager.getActiveNetwork();
+                if (network != null) {
+                    android.net.NetworkCapabilities capabilities = 
+                            connectivityManager.getNetworkCapabilities(network);
+                    return capabilities != null && 
+                            (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) || 
+                             capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR));
+                }
+            } else {
+                // Use deprecated method for older devices
+                android.net.NetworkInfo networkInfo = connectivityManager.getActiveNetworkInfo();
+                return networkInfo != null && networkInfo.isConnected();
+            }
+        }
+        return false;
+    }
+    
+    // Implement message queue for offline messages
+    private static final String MESSAGE_QUEUE_PREFS = "message_queue_prefs";
+    private static final String MESSAGE_QUEUE_KEY = "message_ids";
+    
+    private void addToMessageCheckQueue(long messageId) {
+        // Get shared preferences
+        SharedPreferences prefs = getSharedPreferences(MESSAGE_QUEUE_PREFS, MODE_PRIVATE);
+        
+        // Get existing queue
+        Set<String> queuedMessageIds = prefs.getStringSet(MESSAGE_QUEUE_KEY, new HashSet<>());
+        
+        // Create a new set (because the returned set might be unmodifiable)
+        Set<String> updatedQueue = new HashSet<>(queuedMessageIds);
+        
+        // Add new message ID
+        updatedQueue.add(String.valueOf(messageId));
+        
+        // Save updated queue
+        prefs.edit().putStringSet(MESSAGE_QUEUE_KEY, updatedQueue).apply();
+        
+        Log.d(TAG, "Added message ID " + messageId + " to check queue");
+    }
+    
+    // Process queued messages if internet is available
+    private void processMessageQueue() {
+        if (!isNetworkAvailable()) {
+            return;
+        }
+        
+        // Get shared preferences
+        SharedPreferences prefs = getSharedPreferences(MESSAGE_QUEUE_PREFS, MODE_PRIVATE);
+        
+        // Get queued message IDs
+        Set<String> queuedMessageIds = prefs.getStringSet(MESSAGE_QUEUE_KEY, new HashSet<>());
+        
+        if (queuedMessageIds.isEmpty()) {
+            return;
+        }
+        
+        // Create analyzer service
+        com.example.smsshield.api.SmsAnalyzerService analyzerService = 
+                new com.example.smsshield.api.SmsAnalyzerService(this, new com.example.smsshield.repository.MessageRepository(this));
+        
+        // Process each message
+        com.example.smsshield.repository.MessageRepository repository = 
+                new com.example.smsshield.repository.MessageRepository(this);
+        
+        Set<String> processedIds = new HashSet<>();
+        
+        for (String idStr : queuedMessageIds) {
+            try {
+                long messageId = Long.parseLong(idStr);
+                Message message = repository.getMessageById(messageId);
+                
+                if (message != null) {
+                    // Show spinner for current message checking
+                    runOnUiThread(() -> progressApiChecking.setVisibility(View.VISIBLE));
+                    
+                    // Check message
+                    analyzerService.analyzeMessage(message, new com.example.smsshield.api.SmsAnalyzerService.AnalysisCallback() {
+                        @Override
+                        public void onResult(boolean isSpam, String resultMessage) {
+                            // Update message status
+                            String newStatus = isSpam ? Message.STATUS_SPAM : Message.STATUS_SAFE;
+                            messageViewModel.updateMessageStatus(messageId, newStatus);
+                            
+                            // Mark as processed
+                            processedIds.add(idStr);
+                            
+                            // If all messages processed, hide spinner and update queue
+                            if (processedIds.size() >= queuedMessageIds.size()) {
+                                updateQueueAfterProcessing(processedIds);
+                                runOnUiThread(() -> progressApiChecking.setVisibility(View.GONE));
+                            }
+                        }
+                        
+                        @Override
+                        public void onError(String error) {
+                            // Keep in queue if error
+                            Log.e(TAG, "Error processing queued message " + messageId + ": " + error);
+                            
+                            // If all messages attempted, hide spinner and update queue
+                            processedIds.add(idStr);
+                            if (processedIds.size() >= queuedMessageIds.size()) {
+                                updateQueueAfterProcessing(processedIds);
+                                runOnUiThread(() -> progressApiChecking.setVisibility(View.GONE));
+                            }
+                        }
+                    });
+                } else {
+                    // Message no longer exists, mark as processed
+                    processedIds.add(idStr);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "Error processing message ID " + idStr, e);
+                processedIds.add(idStr);
+            }
+        }
+    }
+    
+    private void updateQueueAfterProcessing(Set<String> processedIds) {
+        // Get shared preferences
+        SharedPreferences prefs = getSharedPreferences(MESSAGE_QUEUE_PREFS, MODE_PRIVATE);
+        
+        // Get existing queue
+        Set<String> queuedMessageIds = prefs.getStringSet(MESSAGE_QUEUE_KEY, new HashSet<>());
+        
+        // Create a new set with only unprocessed IDs
+        Set<String> remainingQueue = new HashSet<>(queuedMessageIds);
+        remainingQueue.removeAll(processedIds);
+        
+        // Save updated queue
+        prefs.edit().putStringSet(MESSAGE_QUEUE_KEY, remainingQueue).apply();
+        
+        Log.d(TAG, "Processed " + processedIds.size() + " messages, " + remainingQueue.size() + " remaining in queue");
+    }
+    
+    @Override
+    protected void onResume() {
+        super.onResume();
+        
+        // Process queued messages when activity resumes
+        new Thread(this::processMessageQueue).start();
     }
 } 

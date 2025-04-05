@@ -2,6 +2,7 @@ package com.example.smsshield.adapters;
 
 import android.content.Context;
 import android.text.format.DateUtils;
+import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -15,11 +16,13 @@ import com.example.smsshield.R;
 import com.example.smsshield.database.entities.Message;
 import com.example.smsshield.database.entities.User;
 
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public class MessageListAdapter extends RecyclerView.Adapter<MessageListAdapter.MessageViewHolder> {
@@ -28,8 +31,10 @@ public class MessageListAdapter extends RecyclerView.Adapter<MessageListAdapter.
     private final List<Message> messages = new ArrayList<>();
     private final List<Message> displayedMessages = new ArrayList<>();
     private final Map<String, User> userMap = new HashMap<>();
+    private final Map<String, String> deviceContacts = new HashMap<>();
     private final OnMessageClickListener clickListener;
     private final OnMessageLongClickListener longClickListener;
+    private final SimpleDateFormat dateFormat;
     private String currentSearchQuery = "";
     
     public interface OnMessageClickListener {
@@ -44,6 +49,7 @@ public class MessageListAdapter extends RecyclerView.Adapter<MessageListAdapter.
         this.context = context;
         this.clickListener = clickListener;
         this.longClickListener = longClickListener;
+        this.dateFormat = new SimpleDateFormat("MMM dd, HH:mm", Locale.getDefault());
     }
     
     @NonNull
@@ -56,22 +62,33 @@ public class MessageListAdapter extends RecyclerView.Adapter<MessageListAdapter.
     @Override
     public void onBindViewHolder(@NonNull MessageViewHolder holder, int position) {
         Message currentMessage = displayedMessages.get(position);
-        User user = userMap.get(currentMessage.getPhoneNumber());
+        User user = getUserForMessage(currentMessage);
         
-        // Set contact name
-        String contactName = (user != null && user.getName() != null) ? user.getName() : currentMessage.getPhoneNumber();
+        // Get contact name from device contacts first, fall back to database
+        String contactName;
+        String phoneNumber = currentMessage.getPhoneNumber();
+        
+        if (deviceContacts.containsKey(phoneNumber)) {
+            contactName = deviceContacts.get(phoneNumber);
+        } else if (user != null && user.getName() != null && !user.getName().isEmpty()) {
+            contactName = user.getName();
+        } else {
+            contactName = phoneNumber;
+        }
+        
         holder.textContactName.setText(contactName);
         
-        // Set message preview
-        holder.textMessagePreview.setText(currentMessage.getContent());
+        String messagePreview = currentMessage.getContent();
+        if (messagePreview.length() > 100) {
+            messagePreview = messagePreview.substring(0, 97) + "...";
+        }
         
-        // Hide timestamp in the contact list view
-        holder.textMessageTime.setVisibility(View.GONE);
+        holder.textMessagePreview.setText(messagePreview);
+        holder.textTimestamp.setText(dateFormat.format(new Date(currentMessage.getTimestamp())));
         
-        // Set status and background color
-        holder.textMessageStatus.setText(getStatusText(currentMessage.getStatus()));
-        holder.textMessageStatus.setBackgroundResource(getStatusBackgroundResource(currentMessage.getStatus()));
-        holder.textMessageStatus.setTextColor(ContextCompat.getColor(context, getStatusTextColor(currentMessage.getStatus())));
+        // Set background based on message status
+        int backgroundResourceId = getBackgroundResourceForStatus(currentMessage.getStatus());
+        holder.statusIndicator.setBackgroundResource(backgroundResourceId);
         
         // Set click listeners
         holder.itemView.setOnClickListener(v -> {
@@ -98,6 +115,10 @@ public class MessageListAdapter extends RecyclerView.Adapter<MessageListAdapter.
         this.messages.clear();
         if (messages != null) {
             this.messages.addAll(messages);
+            // Log message statuses for debugging
+            for (Message msg : messages) {
+                Log.d("MessageListAdapter", "Message ID: " + msg.getId() + ", Status: " + msg.getStatus());
+            }
         }
         filterMessages(currentSearchQuery);
     }
@@ -209,18 +230,45 @@ public class MessageListAdapter extends RecyclerView.Adapter<MessageListAdapter.
         calendar.set(Calendar.MILLISECOND, 0);
     }
     
+    private User getUserForMessage(Message message) {
+        return userMap.get(message.getPhoneNumber());
+    }
+    
+    private int getBackgroundResourceForStatus(String status) {
+        if (status == null || status.isEmpty()) {
+            return R.drawable.bg_message_unknown;
+        }
+        
+        if (Message.STATUS_SPAM.equals(status)) {
+            return R.drawable.bg_message_spam;
+        } else if (Message.STATUS_SAFE.equals(status)) {
+            return R.drawable.bg_message_safe;
+        } else if (!Message.STATUS_UNCHECKED.equals(status)) {
+            return R.drawable.bg_message_sent;
+        } else {
+            return R.drawable.bg_message_unknown;
+        }
+    }
+    
+    public void setDeviceContacts(Map<String, String> contacts) {
+        deviceContacts.clear();
+        if (contacts != null) {
+            deviceContacts.putAll(contacts);
+        }
+    }
+    
     static class MessageViewHolder extends RecyclerView.ViewHolder {
         private final TextView textContactName;
         private final TextView textMessagePreview;
-        private final TextView textMessageTime;
-        private final TextView textMessageStatus;
+        private final TextView textTimestamp;
+        private final View statusIndicator;
         
         public MessageViewHolder(@NonNull View itemView) {
             super(itemView);
             textContactName = itemView.findViewById(R.id.text_contact_name);
             textMessagePreview = itemView.findViewById(R.id.text_message_preview);
-            textMessageTime = itemView.findViewById(R.id.text_message_time);
-            textMessageStatus = itemView.findViewById(R.id.text_message_status);
+            textTimestamp = itemView.findViewById(R.id.text_message_time);
+            statusIndicator = itemView.findViewById(R.id.status_indicator);
         }
     }
 } 

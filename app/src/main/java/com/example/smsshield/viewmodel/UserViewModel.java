@@ -12,6 +12,8 @@ import com.example.smsshield.database.entities.User;
 import com.example.smsshield.repository.UserRepository;
 
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class UserViewModel extends AndroidViewModel {
     
@@ -19,6 +21,7 @@ public class UserViewModel extends AndroidViewModel {
     private final LiveData<List<User>> allUsers;
     private final MutableLiveData<String> searchQuery = new MutableLiveData<>();
     private final LiveData<List<User>> searchResults;
+    private final ExecutorService executorService = Executors.newSingleThreadExecutor();
     
     public UserViewModel(@NonNull Application application) {
         super(application);
@@ -51,6 +54,19 @@ public class UserViewModel extends AndroidViewModel {
         searchQuery.setValue(query);
     }
     
+    /**
+     * Insert a user asynchronously
+     * @param user The user to insert
+     */
+    public void insertAsync(User user) {
+        executorService.execute(() -> repository.insert(user));
+    }
+    
+    /**
+     * Insert a user synchronously and return the inserted user ID
+     * @param user The user to insert
+     * @return The ID of the inserted user
+     */
     public long insert(User user) {
         return repository.insert(user);
     }

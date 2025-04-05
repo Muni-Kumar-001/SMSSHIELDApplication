@@ -50,6 +50,7 @@
     <string name="action_delete">Delete</string>
     <string name="action_block">Block</string>
     <string name="action_unblock">Unblock</string>
+    <string name="action_copy">Copy</string>
     
     <!-- Error messages -->
     <string name="error_permission_denied">Permission denied</string>

@@ -62,6 +62,11 @@ public class MainActivity extends AppCompatActivity
             Manifest.permission.POST_NOTIFICATIONS
     };
     
+    private static final int PAGE_SIZE = 50; // Number of messages to load at once
+    private int currentPage = 0;
+    private boolean isLoading = false;
+    private boolean canLoadMore = true;
+    
     private DrawerLayout drawerLayout;
     private RecyclerView recyclerViewMessages;
     private TextView textEmptyMessages;
@@ -106,26 +111,33 @@ public class MainActivity extends AppCompatActivity
         adapter = new MessageListAdapter(this, this, this);
         recyclerViewMessages.setAdapter(adapter);
         
+        // Add scroll listener for pagination
+        recyclerViewMessages.addOnScrollListener(new RecyclerView.OnScrollListener() {
+            @Override
+            public void onScrolled(@NonNull RecyclerView recyclerView, int dx, int dy) {
+                super.onScrolled(recyclerView, dx, dy);
+                
+                LinearLayoutManager layoutManager = (LinearLayoutManager) recyclerView.getLayoutManager();
+                int visibleItemCount = layoutManager.getChildCount();
+                int totalItemCount = layoutManager.getItemCount();
+                int firstVisibleItemPosition = layoutManager.findFirstVisibleItemPosition();
+                
+                if (!isLoading && canLoadMore) {
+                    if ((visibleItemCount + firstVisibleItemPosition) >= totalItemCount
+                            && firstVisibleItemPosition >= 0
+                            && totalItemCount >= PAGE_SIZE) {
+                        loadMoreMessages();
+                    }
+                }
+            }
+        });
+        
         // Set up view models
         messageViewModel = new ViewModelProvider(this).get(MessageViewModel.class);
         userViewModel = new ViewModelProvider(this).get(UserViewModel.class);
         
         // Now that view models are initialized, check permissions
-        if (!hasRequiredPermissions()) {
-            showPermissionsInfoDialog();
-            requestPermissions();
-        } else {
-            // Already has permissions, load existing messages if first run
-            if (isFirstRun()) {
-                loadExistingSmsMessages();
-            }
-        }
-        
-        // Observe messages
-        messageViewModel.getAllMessages().observe(this, messages -> {
-            this.allMessages = messages;
-            filterMessages();
-        });
+        checkAndRequestPermissions();
         
         // Observe users
         userViewModel.getAllUsers().observe(this, users -> {
@@ -142,46 +154,198 @@ public class MainActivity extends AppCompatActivity
         updateTitle();
     }
     
+    private void checkAndRequestPermissions() {
+        List<String> permissionsNeeded = new ArrayList<>();
+        
+        for (String permission : REQUIRED_PERMISSIONS) {
+            if (ContextCompat.checkSelfPermission(this, permission) != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(permission);
+            }
+        }
+        
+        if (!permissionsNeeded.isEmpty()) {
+            // Show more detailed info dialog before requesting permissions
+            showPermissionsInfoDialog();
+            ActivityCompat.requestPermissions(this, 
+                    permissionsNeeded.toArray(new String[0]), 
+                    PERMISSIONS_REQUEST_CODE);
+        } else {
+            // Already has permissions, load existing messages if first run
+            Log.d("MainActivity", "All permissions granted, loading messages");
+            if (isFirstRun()) {
+                loadExistingSmsMessages();
+            } else {
+                loadInitialMessages();
+            }
+        }
+    }
+    
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        
+        if (requestCode == PERMISSIONS_REQUEST_CODE) {
+            boolean allGranted = true;
+            Map<String, Boolean> permissionResults = new HashMap<>();
+            boolean contactsGranted = false;
+            
+            for (int i = 0; i < permissions.length; i++) {
+                permissionResults.put(permissions[i], grantResults[i] == PackageManager.PERMISSION_GRANTED);
+                allGranted = allGranted && (grantResults[i] == PackageManager.PERMISSION_GRANTED);
+                
+                Log.d("Permissions", permissions[i] + " granted: " + (grantResults[i] == PackageManager.PERMISSION_GRANTED));
+                
+                if (Manifest.permission.READ_CONTACTS.equals(permissions[i]) && 
+                        grantResults[i] == PackageManager.PERMISSION_GRANTED) {
+                    contactsGranted = true;
+                    Log.d("Permissions", "Contacts permission granted!");
+                }
+            }
+            
+            if (permissionResults.getOrDefault(Manifest.permission.READ_SMS, false)) {
+                // SMS permission granted, load messages
+                if (isFirstRun()) {
+                    Log.d("MainActivity", "Loading existing SMS messages after permission granted");
+                    loadExistingSmsMessages();
+                } else {
+                    Log.d("MainActivity", "Loading initial messages after permission granted");
+                    loadInitialMessages();
+                }
+            } else {
+                // SMS permission denied, show error
+                Log.d("MainActivity", "SMS permission denied");
+                textEmptyMessages.setText("SMS permission required to display messages");
+            }
+            
+            if (contactsGranted) {
+                Toast.makeText(this, "Contacts permission granted", Toast.LENGTH_SHORT).show();
+                updateContactsFromDeviceContacts();
+            }
+            
+            if (!allGranted) {
+                Toast.makeText(this, "Some permissions were denied. App may not function properly.", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+    
     private void filterMessages() {
+        Log.d("MainActivity", "Filtering messages with filter: " + currentFilter);
+        
         if (allMessages == null) {
+            loadInitialMessages(); // Reload from database if messages are null
             return;
         }
         
-        // Group messages by phone number, keeping only the most recent message for each number
-        Map<String, Message> latestMessageByContact = new HashMap<>();
+        new Thread(() -> {
+            try {
+                // Load device contacts for better name resolution
+                Map<String, String> deviceContacts = loadDeviceContacts();
+                
+                // Group messages by phone number, keeping only the most recent message for each number
+                Map<String, Message> latestMessageByContact = new HashMap<>();
+                int filteredCount = 0;
+                int totalCount = allMessages.size();
+                
+                Log.d("MainActivity", "Filtering " + totalCount + " messages");
+                
+                for (Message message : allMessages) {
+                    String phoneNumber = message.getPhoneNumber();
+                    String status = message.getStatus();
+                    
+                    // Apply current filter
+                    if (!currentFilter.equals("all") && !status.equals(currentFilter)) {
+                        Log.d("MainActivity", "Skipping message ID " + message.getId() + 
+                              " with status " + status + " (filter: " + currentFilter + ")");
+                        continue;
+                    }
+                    
+                    filteredCount++;
+                    
+                    // Check if we already have a message from this contact
+                    Message existingMessage = latestMessageByContact.get(phoneNumber);
+                    
+                    // If no message exists yet or this message is newer, update the map
+                    if (existingMessage == null || message.getTimestamp() > existingMessage.getTimestamp()) {
+                        latestMessageByContact.put(phoneNumber, message);
+                    }
+                }
+                
+                Log.d("MainActivity", "Filter result: " + filteredCount + " out of " + totalCount + 
+                      " messages matched filter: " + currentFilter);
+                
+                // Convert map values to a list
+                List<Message> filteredMessages = new ArrayList<>(latestMessageByContact.values());
+                
+                // Sort by timestamp (newest first)
+                filteredMessages.sort((m1, m2) -> Long.compare(m2.getTimestamp(), m1.getTimestamp()));
+                
+                // Update UI on main thread
+                runOnUiThread(() -> {
+                    // Update adapter with device contact names
+                    adapter.setDeviceContacts(deviceContacts);
+                    adapter.setMessages(filteredMessages);
+                    
+                    if (filteredMessages.isEmpty()) {
+                        recyclerViewMessages.setVisibility(View.GONE);
+                        textEmptyMessages.setVisibility(View.VISIBLE);
+                        if (currentFilter.equals("all")) {
+                            textEmptyMessages.setText("No messages found");
+                        } else {
+                            textEmptyMessages.setText("No " + currentFilter + " messages found");
+                        }
+                    } else {
+                        recyclerViewMessages.setVisibility(View.VISIBLE);
+                        textEmptyMessages.setVisibility(View.GONE);
+                    }
+                });
+            } catch (Exception e) {
+                Log.e("MainActivity", "Error filtering messages", e);
+            }
+        }).start();
+    }
+    
+    private Map<String, String> loadDeviceContacts() {
+        Map<String, String> contactMap = new HashMap<>();
         
-        for (Message message : allMessages) {
-            String phoneNumber = message.getPhoneNumber();
-            
-            // Apply current filter
-            if (!currentFilter.equals("all") && !message.getStatus().equals(currentFilter)) {
-                continue;
-            }
-            
-            // Check if we already have a message from this contact
-            Message existingMessage = latestMessageByContact.get(phoneNumber);
-            
-            // If no message exists yet or this message is newer, update the map
-            if (existingMessage == null || message.getTimestamp() > existingMessage.getTimestamp()) {
-                latestMessageByContact.put(phoneNumber, message);
-            }
+        // Check permission first
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) 
+                != PackageManager.PERMISSION_GRANTED) {
+            return contactMap;
         }
         
-        // Convert map values to a list
-        List<Message> filteredMessages = new ArrayList<>(latestMessageByContact.values());
+        // Columns to fetch
+        String[] projection = new String[]{
+                ContactsContract.CommonDataKinds.Phone.NUMBER,
+                ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+        };
         
-        // Sort by timestamp (newest first)
-        filteredMessages.sort((m1, m2) -> Long.compare(m2.getTimestamp(), m1.getTimestamp()));
-        
-        adapter.setMessages(filteredMessages);
-        
-        if (filteredMessages.isEmpty()) {
-            recyclerViewMessages.setVisibility(View.GONE);
-            textEmptyMessages.setVisibility(View.VISIBLE);
-        } else {
-            recyclerViewMessages.setVisibility(View.VISIBLE);
-            textEmptyMessages.setVisibility(View.GONE);
+        // Query device contacts
+        try (Cursor cursor = getContentResolver().query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                projection,
+                null,
+                null,
+                null)) {
+                
+            if (cursor != null) {
+                int numberColumnIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.NUMBER);
+                int nameColumnIndex = cursor.getColumnIndex(ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME);
+                
+                while (cursor.moveToNext()) {
+                    String phoneNumber = cursor.getString(numberColumnIndex);
+                    String name = cursor.getString(nameColumnIndex);
+                    
+                    // Format phone number (remove spaces, dashes, etc.)
+                    phoneNumber = phoneNumber.replaceAll("[\\s-()]", "");
+                    
+                    contactMap.put(phoneNumber, name);
+                }
+            }
+        } catch (Exception e) {
+            Log.e("MainActivity", "Error loading device contacts", e);
         }
+        
+        return contactMap;
     }
     
     private void updateTitle() {
@@ -245,31 +409,37 @@ public class MainActivity extends AppCompatActivity
         
         if (id == R.id.nav_all) {
             currentFilter = "all";
-            filterMessages();
-            updateTitle();
+            refreshMessages();
         } else if (id == R.id.nav_safe) {
             currentFilter = Message.STATUS_SAFE;
-            filterMessages();
-            updateTitle();
+            refreshMessages();
         } else if (id == R.id.nav_spam) {
             currentFilter = Message.STATUS_SPAM;
-            filterMessages();
-            updateTitle();
+            refreshMessages();
         } else if (id == R.id.nav_unknown) {
             currentFilter = Message.STATUS_UNCHECKED;
-            filterMessages();
-            updateTitle();
+            refreshMessages();
         } else if (id == R.id.nav_contacts) {
             Intent intent = new Intent(MainActivity.this, ContactsActivity.class);
             startActivity(intent);
         } else if (id == R.id.nav_home) {
             currentFilter = "all";
-            filterMessages();
-            updateTitle();
+            refreshMessages();
         }
         
         drawerLayout.closeDrawer(GravityCompat.START);
         return true;
+    }
+    
+    /**
+     * Refreshes messages by reloading from the database and applying the current filter
+     */
+    private void refreshMessages() {
+        Log.d("MainActivity", "Refreshing messages with filter: " + currentFilter);
+        // Reload messages from the database to get latest changes
+        loadInitialMessages();
+        // Update the title based on current filter
+        updateTitle();
     }
     
     @Override
@@ -329,18 +499,30 @@ public class MainActivity extends AppCompatActivity
                 // Then delete from our database
                 messageViewModel.delete(message);
                 Toast.makeText(this, "Message deleted", Toast.LENGTH_SHORT).show();
+                
+                // Refresh the message list to reflect changes
+                refreshMessages();
             } else if (selectedOption.equals(getString(R.string.message_block_sender))) {
                 if (contactUser != null) {
                     contactUser.setStatus(User.STATUS_BLOCKED);
                     userViewModel.update(contactUser);
                     Toast.makeText(this, "Sender blocked", Toast.LENGTH_SHORT).show();
+                    
+                    // Refresh the message list
+                    refreshMessages();
                 }
             } else if (selectedOption.equals(getString(R.string.message_mark_safe))) {
                 messageViewModel.updateMessageStatus(message.getId(), Message.STATUS_SAFE);
                 Toast.makeText(this, "Marked as safe", Toast.LENGTH_SHORT).show();
+                
+                // Refresh the message list
+                refreshMessages();
             } else if (selectedOption.equals(getString(R.string.message_mark_spam))) {
                 messageViewModel.updateMessageStatus(message.getId(), Message.STATUS_SPAM);
                 Toast.makeText(this, "Marked as spam", Toast.LENGTH_SHORT).show();
+                
+                // Refresh the message list
+                refreshMessages();
             }
         });
         
@@ -351,22 +533,84 @@ public class MainActivity extends AppCompatActivity
         // Only attempt to delete if this is an incoming message (as we don't have URI for sent messages)
         if (message.isIncoming()) {
             try {
+                // Log the message we're trying to delete
+                Log.d("MainActivity", "Attempting to delete SMS from device: ID=" + message.getId() + 
+                      ", Phone=" + message.getPhoneNumber() + ", Date=" + message.getTimestamp());
+                
                 // Constructing the SMS Uri
                 Uri smsUri = Uri.parse("content://sms");
                 
-                // Query to find the message in the system database
-                String selection = "address = ? AND date = ? AND body = ?";
-                String[] selectionArgs = new String[]{
-                        message.getPhoneNumber(),
-                        String.valueOf(message.getTimestamp()),
-                        message.getContent()
+                // First try to find the message by id
+                int deletedRows = 0;
+                
+                // Try to match on multiple criteria to better find the message
+                String[] queries = {
+                    // Try by phone and approximate time (more lenient)
+                    "address LIKE ? AND date BETWEEN ? AND ?",
+                    // Try by content and date range
+                    "body = ? AND date BETWEEN ? AND ?",
+                    // Try by all criteria (most specific)
+                    "address LIKE ? AND body = ? AND date BETWEEN ? AND ?"
                 };
                 
-                // Delete the message
-                getContentResolver().delete(smsUri, selection, selectionArgs);
+                // Get a time range of 5 seconds around the message timestamp
+                long timeStart = message.getTimestamp() - 5000;
+                long timeEnd = message.getTimestamp() + 5000;
+                
+                for (String selection : queries) {
+                    String[] selectionArgs;
+                    
+                    if (selection.startsWith("address")) {
+                        if (selection.contains("body")) {
+                            // Combined query
+                            selectionArgs = new String[]{
+                                "%" + message.getPhoneNumber() + "%",
+                                message.getContent(),
+                                String.valueOf(timeStart),
+                                String.valueOf(timeEnd)
+                            };
+                        } else {
+                            // Just phone number and time
+                            selectionArgs = new String[]{
+                                "%" + message.getPhoneNumber() + "%",
+                                String.valueOf(timeStart),
+                                String.valueOf(timeEnd)
+                            };
+                        }
+                    } else {
+                        // Just content and time
+                        selectionArgs = new String[]{
+                            message.getContent(),
+                            String.valueOf(timeStart),
+                            String.valueOf(timeEnd)
+                        };
+                    }
+                    
+                    // Try to delete with this query
+                    int rows = getContentResolver().delete(smsUri, selection, selectionArgs);
+                    Log.d("MainActivity", "Deletion attempt with query '" + selection + 
+                          "' deleted " + rows + " messages");
+                    
+                    deletedRows += rows;
+                    
+                    // If we deleted something, we can stop
+                    if (rows > 0) {
+                        break;
+                    }
+                }
+                
+                if (deletedRows > 0) {
+                    Log.d("MainActivity", "Successfully deleted " + deletedRows + " message(s) from device SMS database");
+                    // Force refresh the conversation
+                    sendBroadcast(new Intent("android.provider.Telephony.SMS_RECEIVED"));
+                } else {
+                    Log.e("MainActivity", "Failed to delete message from device SMS database - no matching message found");
+                }
             } catch (Exception e) {
                 Log.e("MainActivity", "Error deleting SMS from device", e);
             }
+        } else {
+            Log.d("MainActivity", "Not deleting outgoing message from device SMS database");
         }
     }
     
@@ -401,183 +645,103 @@ public class MainActivity extends AppCompatActivity
         builder.show();
     }
     
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == PERMISSIONS_REQUEST_CODE) {
-            boolean allGranted = true;
-            boolean contactsGranted = false;
-            
-            for (int i = 0; i < permissions.length; i++) {
-                if (grantResults[i] != PackageManager.PERMISSION_GRANTED) {
-                    allGranted = false;
-                    Log.d("Permissions", "Permission denied: " + permissions[i]);
-                } else if (Manifest.permission.READ_CONTACTS.equals(permissions[i])) {
-                    contactsGranted = true;
-                    Log.d("Permissions", "Contacts permission granted!");
-                }
-            }
-            
-            if (allGranted) {
-                // Permissions granted, load existing SMS messages
-                Toast.makeText(this, "All permissions granted", Toast.LENGTH_SHORT).show();
-                loadExistingSmsMessages();
-            } else {
-                if (contactsGranted) {
-                    Toast.makeText(this, "Contacts permission granted, some other permissions denied", Toast.LENGTH_LONG).show();
-                    updateContactsFromDeviceContacts();
-                } else {
-                    Toast.makeText(this, "Contacts permission denied. Contact names will not be displayed.", Toast.LENGTH_LONG).show();
-                }
-                Toast.makeText(this, "Some permissions were denied. App may not function properly.", Toast.LENGTH_LONG).show();
-            }
-        }
-    }
-    
     private void loadExistingSmsMessages() {
-        // Show a loading message
-        Toast.makeText(this, "Loading existing messages...", Toast.LENGTH_SHORT).show();
+        // Show loading message
+        textEmptyMessages.setVisibility(View.VISIBLE);
+        textEmptyMessages.setText("Loading existing messages...");
         
-        // Run in background thread to avoid blocking UI
+        // Run SMS loading in a background thread to avoid blocking the UI
         new Thread(() -> {
             try {
-                // Load contacts info first if we have permission
-                Map<String, String> contactsMap = new HashMap<>();
-                if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_CONTACTS) == PackageManager.PERMISSION_GRANTED) {
-                    loadContactsInfo(contactsMap);
-                }
+                Uri uri = Uri.parse("content://sms");
+                String[] projection = new String[]{"_id", "address", "body", "date", "type"};
                 
-                // Create a cursor to query the SMS content provider
-                Uri smsUri = Uri.parse("content://sms");
-                String[] projection = new String[] {
-                        "_id", "address", "date", "body", "type"
-                };
-                
-                // Sort by date descending (newest first)
-                String sortOrder = "date DESC";
-                
-                // Query SMS content provider
-                Cursor cursor = getContentResolver().query(smsUri, projection, null, null, sortOrder);
+                // Query all SMS messages
+                try (Cursor cursor = getContentResolver().query(uri, projection, null, null, "date DESC")) {
+                    int count = 0;
+                    int max = 500; // Limit to 500 messages to avoid loading too many
                 
                 if (cursor != null && cursor.moveToFirst()) {
-                    int idxAddress = cursor.getColumnIndex("address");
-                    int idxDate = cursor.getColumnIndex("date");
-                    int idxBody = cursor.getColumnIndex("body");
-                    int idxType = cursor.getColumnIndex("type");
-                    
-                    // Get all known phone numbers to avoid adding duplicates
-                    Set<String> existingPhoneNumbers = new HashSet<>();
-                    userViewModel.getAllUsers().getValue();
-                    if (userViewModel.getAllUsers().getValue() != null) {
-                        for (User user : userViewModel.getAllUsers().getValue()) {
-                            existingPhoneNumbers.add(user.getPhoneNumber());
-                        }
-                    }
-                    
-                    // Keep track of message IDs to avoid duplicates
-                    Map<String, Boolean> processedMessages = new HashMap<>();
-                    
-                    // Keep track of the top 10 oldest messages to analyze
-                    List<Message> oldestMessages = new ArrayList<>();
-                    
-                    do {
-                        // Check if all required columns exist
-                        if (idxAddress >= 0 && idxDate >= 0 && idxBody >= 0 && idxType >= 0) {
-                            String address = cursor.getString(idxAddress);
-                            long date = cursor.getLong(idxDate);
-                            String body = cursor.getString(idxBody);
-                            int type = cursor.getInt(idxType);
+                        do {
+                            // Extract message data
+                            String messageId = cursor.getString(cursor.getColumnIndexOrThrow("_id"));
+                            String phoneNumber = cursor.getString(cursor.getColumnIndexOrThrow("address"));
+                            String messageBody = cursor.getString(cursor.getColumnIndexOrThrow("body"));
+                            long messageDate = cursor.getLong(cursor.getColumnIndexOrThrow("date"));
+                            int messageType = cursor.getInt(cursor.getColumnIndexOrThrow("type"));
                             
-                            // Skip if message is empty
-                            if (address == null || address.isEmpty() || body == null || body.isEmpty()) {
-                                continue;
+                            // Normalize phone number
+                            if (phoneNumber != null) {
+                                phoneNumber = phoneNumber.replaceAll("[^0-9+]", "");
+                            } else {
+                                phoneNumber = "unknown";
                             }
                             
-                            // Clean up phone number
-                            address = address.replaceAll("[^0-9+]", "");
-                            
-                            // Create a unique message identifier to avoid duplicates
-                            String messageKey = address + "_" + date + "_" + body.hashCode();
-                            
-                            // Skip if message already processed
-                            if (processedMessages.containsKey(messageKey)) {
-                                continue;
-                            }
-                            
-                            processedMessages.put(messageKey, true);
-                            
-                            // Get or create a user for this phone number
-                            User user = userViewModel.getUserByPhoneNumber(address);
+                            // Check if user exists
+                            User user = userViewModel.getUserByPhoneNumber(phoneNumber);
                             long userId;
                             
-                            if (user == null) {
-                                // Create new user if not exists
-                                User newUser = new User(address, address, User.STATUS_UNKNOWN);
-                                userId = userViewModel.insert(newUser);
-                                existingPhoneNumbers.add(address);
+                            // Process in batches to avoid overwhelming the database
+                            if (count % 50 == 0) {
+                                // Update UI to show progress
+                                final int processedCount = count;
+                                runOnUiThread(() -> {
+                                    textEmptyMessages.setText("Loading messages: " + processedCount + " processed");
+                                });
                                 
-                                // Re-get the user to ensure we have the ID
-                                user = userViewModel.getUserByPhoneNumber(address);
-                                if (user == null) {
-                                    // If still null, use the returned ID
-                                    if (userId <= 0) {
-                                        Log.e("MainActivity", "Failed to create user for: " + address);
-                                        continue;
-                                    }
+                                // Small delay to let UI update
+                                Thread.sleep(10);
+                            }
+                            
+                            if (user == null) {
+                                // Create a new user if not exists
+                                User newUser = new User(phoneNumber, phoneNumber, User.STATUS_UNKNOWN);
+                                userId = userViewModel.insert(newUser);
+                                // Create a new user object since insert doesn't update the ID
+                                user = new User(phoneNumber, phoneNumber, User.STATUS_UNKNOWN);
+                                user.setId(userId);
                                 } else {
                                     userId = user.getId();
-                                }
-                            } else {
-                                userId = user.getId();
-                                existingPhoneNumbers.add(address);
                             }
                             
-                            // Create message entity with all required parameters
-                            boolean isIncoming = (type == 1); // 1 for received, 2 for sent
+                            // Create message object
+                            boolean isIncoming = messageType == 1; // 1 = Received, 2 = Sent
+                            String status = isIncoming ? Message.STATUS_UNCHECKED : "";
+                            
                             Message message = new Message(
-                                userId,      // userId
-                                body,        // content
-                                date,        // timestamp
-                                isIncoming,  // isIncoming
-                                Message.STATUS_UNCHECKED, // status
-                                address      // phoneNumber
+                                    userId,
+                                    messageBody,
+                                    messageDate,
+                                    isIncoming,
+                                    status,
+                                    phoneNumber
                             );
                             
-                            // Insert message into database
-                            long messageId = messageViewModel.insert(message);
+                            // Save message to database
+                            messageViewModel.insert(message);
                             
-                            // Set the inserted ID on the message object
-                            message.setId(messageId);
+                            count++;
                             
-                            // If this is an incoming message, add it to our list of messages to analyze
-                            // We only want to analyze incoming messages
-                            if (isIncoming && oldestMessages.size() < 10) {
-                                oldestMessages.add(message);
-                            }
+                            // Limit the number of messages to load
+                            if (count >= max) {
+                                break;
                         }
                     } while (cursor.moveToNext());
-                    
-                    cursor.close();
-                    
-                    // Update UI to show messages have been loaded
-                    runOnUiThread(() -> {
-                        Toast.makeText(MainActivity.this, "Analyzing messages...", Toast.LENGTH_SHORT).show();
-                    });
-                    
-                    // Analyze the oldest messages (which are the first in the list)
-                    if (!oldestMessages.isEmpty()) {
-                        analyzeMessages(oldestMessages);
-                    } else {
-                        // Update UI if no messages to analyze
-                        runOnUiThread(() -> {
-                            Toast.makeText(MainActivity.this, "No messages to analyze", Toast.LENGTH_SHORT).show();
-                        });
                     }
+                    
+                    // Mark first run completed
+                    SharedPreferences prefs = getSharedPreferences("app_prefs", MODE_PRIVATE);
+                    prefs.edit().putBoolean("first_run", false).apply();
+                    
+                    // Load messages into the UI
+                    runOnUiThread(() -> {
+                        loadInitialMessages();
+                    });
                 }
             } catch (Exception e) {
                 Log.e("MainActivity", "Error loading SMS messages", e);
                 runOnUiThread(() -> {
-                    Toast.makeText(MainActivity.this, "Error loading messages: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+                    textEmptyMessages.setText("Error loading messages: " + e.getMessage());
                 });
             }
         }).start();
@@ -700,11 +864,18 @@ public class MainActivity extends AppCompatActivity
     }
     
     private void refreshMessageList() {
-        // The adapter will be refreshed automatically through the LiveData observer,
-        // but we can trigger an immediate refresh of the UI
-        if (adapter != null) {
-            adapter.notifyDataSetChanged();
-        }
+        // Trigger a reload of messages to show newly received messages
+        runOnUiThread(() -> {
+            // Reload messages from database
+            loadInitialMessages();
+            
+            // Notify adapter to refresh UI
+            if (adapter != null) {
+                adapter.notifyDataSetChanged();
+            }
+            
+            Log.d("MainActivity", "Message list refreshed after message analysis");
+        });
     }
     
     @Override
@@ -748,6 +919,202 @@ public class MainActivity extends AppCompatActivity
                 });
             } catch (Exception e) {
                 Log.e("Contacts", "Error updating contacts", e);
+            }
+        }).start();
+    }
+    
+    private void loadInitialMessages() {
+        currentPage = 0;
+        canLoadMore = true;
+        
+        // Show loading indicator
+        textEmptyMessages.setVisibility(View.VISIBLE);
+        textEmptyMessages.setText("Loading messages...");
+        
+        // Check if we have the necessary permissions
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_SMS) 
+                != PackageManager.PERMISSION_GRANTED) {
+            textEmptyMessages.setText("SMS permission required to display messages");
+            return;
+        }
+        
+        // Load top 50 messages
+        messageViewModel.getPagedMessages(currentPage, 50).observe(this, messages -> {
+            isLoading = false;
+            Log.d("MainActivity", "Loaded " + (messages != null ? messages.size() : 0) + " messages");
+            
+            if (messages == null || messages.isEmpty()) {
+                textEmptyMessages.setText("No messages found");
+                textEmptyMessages.setVisibility(View.VISIBLE);
+                recyclerViewMessages.setVisibility(View.GONE);
+                return;
+            }
+            
+            this.allMessages = messages;
+            filterMessages();
+            
+            if (messages.size() < 50) {
+                canLoadMore = false;
+            }
+            
+            // Check unchecked messages in background
+            if (!messages.isEmpty()) {
+                new Thread(() -> checkUnverifiedMessages(messages)).start();
+            }
+        });
+    }
+    
+    // Check unverified messages
+    private void checkUnverifiedMessages(List<Message> messages) {
+        // Create analyzer service
+        com.example.smsshield.api.SmsAnalyzerService analyzerService = 
+                new com.example.smsshield.api.SmsAnalyzerService(this, new com.example.smsshield.repository.MessageRepository(this));
+        
+        // Find unverified messages and check them if we have internet
+        if (isNetworkAvailable()) {
+            List<Message> uncheckedMessages = new ArrayList<>();
+            
+            // Find unchecked messages that are incoming
+            for (Message message : messages) {
+                if (message.isIncoming() && Message.STATUS_UNCHECKED.equals(message.getStatus())) {
+                    uncheckedMessages.add(message);
+                }
+                
+                // Limit to 10 messages at a time
+                if (uncheckedMessages.size() >= 10) {
+                    break;
+                }
+            }
+            
+            // Process each unchecked message
+            for (Message message : uncheckedMessages) {
+                analyzerService.analyzeMessage(message, new com.example.smsshield.api.SmsAnalyzerService.AnalysisCallback() {
+                    @Override
+                    public void onResult(boolean isSpam, String resultMessage) {
+                        // Update message status
+                        String newStatus = isSpam ? Message.STATUS_SPAM : Message.STATUS_SAFE;
+                        messageViewModel.updateMessageStatus(message.getId(), newStatus);
+                    }
+                    
+                    @Override
+                    public void onError(String error) {
+                        // Leave as unchecked
+                        Log.e("MainActivity", "Error checking message: " + error);
+                    }
+                });
+            }
+        } else {
+            // Queue messages for later checking
+            List<Message> messagesToQueue = new ArrayList<>();
+            
+            // Find unchecked messages that are incoming
+            for (Message message : messages) {
+                if (message.isIncoming() && Message.STATUS_UNCHECKED.equals(message.getStatus())) {
+                    messagesToQueue.add(message);
+                }
+            }
+            
+            // Add all to queue
+            addMessagesToCheckQueue(messagesToQueue);
+        }
+    }
+    
+    // Helper methods for message queue
+    private void addMessagesToCheckQueue(List<Message> messages) {
+        // Get shared preferences
+        SharedPreferences prefs = getSharedPreferences("message_queue_prefs", MODE_PRIVATE);
+        
+        // Get existing queue
+        Set<String> queuedMessageIds = prefs.getStringSet("message_ids", new HashSet<>());
+        
+        // Create a new set (because the returned set might be unmodifiable)
+        Set<String> updatedQueue = new HashSet<>(queuedMessageIds);
+        
+        // Add new message IDs
+        for (Message message : messages) {
+            updatedQueue.add(String.valueOf(message.getId()));
+        }
+        
+        // Save updated queue
+        prefs.edit().putStringSet("message_ids", updatedQueue).apply();
+        
+        Log.d("MainActivity", "Added " + messages.size() + " messages to check queue");
+    }
+    
+    // Check if network is available
+    private boolean isNetworkAvailable() {
+        android.net.ConnectivityManager connectivityManager = (android.net.ConnectivityManager) 
+                getSystemService(Context.CONNECTIVITY_SERVICE);
+        
+        if (connectivityManager != null) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+                android.net.Network network = connectivityManager.getActiveNetwork();
+                if (network != null) {
+                    android.net.NetworkCapabilities capabilities = 
+                            connectivityManager.getNetworkCapabilities(network);
+                    return capabilities != null && 
+                            (capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) || 
+                             capabilities.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR));
+                }
+            } else {
+                // Use deprecated method for older devices
+                android.net.NetworkInfo networkInfo = connectivityManager.getActiveNetworkInfo();
+                return networkInfo != null && networkInfo.isConnected();
+            }
+        }
+        return false;
+    }
+    
+    private void loadMoreMessages() {
+        if (isLoading || !canLoadMore) return;
+        
+        isLoading = true;
+        currentPage++;
+        
+        // Show a loading indicator (could be a progress bar at the bottom of the list)
+        runOnUiThread(() -> {
+            // You could show a loading indicator here
+            Log.d("MainActivity", "Loading more messages, page: " + currentPage);
+        });
+        
+        // Load messages in background thread
+        new Thread(() -> {
+            try {
+                List<Message> newMessages = messageViewModel.getPagedMessagesSync(currentPage, PAGE_SIZE);
+                
+                if (newMessages == null || newMessages.isEmpty()) {
+                    runOnUiThread(() -> {
+                        canLoadMore = false;
+                        isLoading = false;
+                        Log.d("MainActivity", "No more messages to load");
+                    });
+                    return;
+                }
+                
+                List<Message> combinedMessages = new ArrayList<>(allMessages);
+                combinedMessages.addAll(newMessages);
+                
+                // Update UI on main thread
+                runOnUiThread(() -> {
+                    isLoading = false;
+                    allMessages = combinedMessages;
+                    filterMessages();
+                    
+                    if (newMessages.size() < PAGE_SIZE) {
+                        canLoadMore = false;
+                    }
+                    
+                    Log.d("MainActivity", "Loaded " + newMessages.size() + " more messages");
+                });
+                
+                // Check unchecked messages in background
+                checkUnverifiedMessages(newMessages);
+                
+            } catch (Exception e) {
+                Log.e("MainActivity", "Error loading more messages", e);
+                runOnUiThread(() -> {
+                    isLoading = false;
+                });
             }
         }).start();
     }

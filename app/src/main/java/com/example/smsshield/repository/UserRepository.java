@@ -18,7 +18,7 @@ public class UserRepository {
     private final ExecutorService executor;
     
     public UserRepository(Context context) {
-        SmsShieldDatabase database = SmsShieldDatabase.getDatabase(context);
+        SmsShieldDatabase database = SmsShieldDatabase.getInstance(context);
         userDao = database.userDao();
         allUsers = userDao.getAllUsers();
         executor = Executors.newSingleThreadExecutor();
